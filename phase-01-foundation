@@ -1,0 +1,136 @@
+# Phase 1: Foundation
+
+## What to Build
+Set up the Laravel project with the complete database schema, multi-tenant middleware, authentication for both admin and patient portal, and role-based access control.
+
+## Reference
+Read SPEC.md sections 2 (Architecture), 3 (Database Schema), and 5 (Roles).
+
+## Tasks
+
+### 1. Laravel Project Setup
+- Create a new Laravel project
+- Configure MariaDB connection
+- Install packages: laravel/sanctum, ramsey/uuid (for UUID primary keys)
+- Set up Redis for caching and queues
+
+### 2. Database Migrations
+Create migrations for ALL 40 tables defined in SPEC.md Section 3. Every table needs:
+- `id` as UUID primary key (not auto-increment)
+- `tenant_id` as UUID foreign key (except tenants, users, audit_log)
+- `created_at`, `updated_at`, `deleted_at` (soft deletes)
+- All columns, types, and indexes as specified
+
+Migration order (respect foreign keys):
+1. tenants
+2. users
+3. patients
+4. leads
+5. providers
+6. appointment_types
+7. appointments
+8. appointment_providers
+9. schedule_templates
+10. blocked_schedules
+11. schedule_notes
+12. waitlist_entries
+13. patient_medical_history
+14. medical_conditions
+15. allergies
+16. medications
+17. intake_questionnaires
+18. products
+19. price_books
+20. price_book_entries
+21. invoices
+22. invoice_line_items
+23. transactions
+24. payment_methods
+25. stripe_customers
+26. treatment_records
+27. laser_parameters
+28. injection_records
+29. referral_codes
+30. referrals
+31. referral_credits
+32. memberships
+33. redeemable_items
+34. conversations
+35. messages
+36. message_templates
+37. patient_files
+38. document_templates
+39. signatures
+40. audit_log
+
+### 3. Base Models
+Create Eloquent models for all tables with:
+- UUID trait for primary keys
+- `$casts` for JSON columns, ENUMs, dates, decimals
+- Relationships defined (belongsTo, hasMany, hasOne)
+- `$fillable` arrays
+
+### 4. Tenant Middleware
+Create `TenantScope` global scope that auto-filters by tenant_id:
+```php
+class TenantScope implements Scope {
+    public function apply(Builder $builder, Model $model) {
+        $builder->where($model->getTable().'.tenant_id', auth()->user()->tenant_id);
+    }
+}
+```
+Create a `TenantScopedModel` base class that:
+- Adds the global scope in `booted()`
+- Auto-sets tenant_id on creating events
+- All tenant-scoped models extend this
+
+Create `IdentifyTenant` middleware that resolves tenant from:
+- Subdomain in request host
+- Or Bearer token's associated user's tenant_id
+
+### 5. Authentication
+**Admin Auth:**
+- POST /auth/login — email + password, return Sanctum token with 'admin' ability
+- POST /auth/logout — revoke token
+- POST /auth/forgot-password — send reset email
+- POST /auth/reset-password — reset with token
+
+**Patient Portal Auth (separate guard):**
+- POST /portal/auth/login — email + password, return token with 'patient' ability
+- POST /portal/auth/register — self-registration with email verification
+- Separate token scope so patient tokens cannot access admin endpoints
+
+### 6. RBAC Middleware
+Create `CheckRole` middleware:
+```php
+Route::middleware(['auth:sanctum', 'role:admin,operations'])->group(...)
+```
+
+Five roles: admin, operations, provider, front_desk, patient.
+
+Create Laravel Policies for each model with role-based rules:
+- Admin: full access to everything
+- Operations: full access except system config
+- Provider: only own patients, own schedule, own scorecard
+- Front Desk: calendar (all), booking, patient search, check-in, leads, inbox
+- Patient: only own data
+
+### 7. Audit Log Service
+Create `AuditService` that logs to audit_log table:
+```php
+AuditService::log('view', 'patients', $patient->id);
+AuditService::log('update', 'patients', $patient->id, $changes);
+```
+Create middleware that auto-logs record access on API responses containing PHI.
+
+### 8. Seeders
+- Create a default tenant (Allure Aesthetics) with sample config
+- Create test users for each role
+- Create 4 price books (Standard, Employee, Beauty Bank, WL Member)
+
+## Acceptance Criteria
+- `php artisan migrate` runs all 40 migrations successfully
+- Can create a tenant, create users with different roles
+- Admin token can access admin routes, patient token cannot
+- Tenant middleware filters queries — User A in Tenant 1 cannot see Tenant 2 data
+- Audit log captures all CRUD operations
